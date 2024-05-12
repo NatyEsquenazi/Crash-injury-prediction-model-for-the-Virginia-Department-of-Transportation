@@ -1,0 +1,249 @@
+---
+title: "Presentation Big Data"
+output:
+  pdf_document: default
+  html_document: default
+date: "2024-03-23"
+---
+
+## Crash injuries prediction model for the Virginia Department of Transporation
+
+```{r setup, include=FALSE, warning=FALSE, message=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# Install TinyTeX package
+library(tinytex)
+```
+
+## Import libraries
+```{r import, echo=TRUE, warning=FALSE, message=FALSE}
+# Load packages
+library(foreign)
+library(tidyverse)
+library(margins)
+library(ROCR)
+library(caTools)
+library(tree) # tree
+library(rpart) # tree 
+library(rpart.plot) # tree plot
+library(caret) #confusion matrix
+library(e1071) #confusion matrix
+library(ISLR)
+library(MASS)
+library(randomForest)
+library(gbm)
+library(ipred)
+library(ggplot2)
+library(hrbrthemes)
+library(texreg)
+```
+
+## Import dataset and sample 
+```{r dataset, echo=TRUE, warning=FALSE, message=FALSE}
+# Import dataset
+df <- read.dbf("C:/Users/usuario/Desktop/Masters Degree CEU/Big Data/Project/CrashData_Basic.dbf", as.is = F)
+```
+
+## Data Tranformation
+```{r transformation, echo=TRUE, warning=FALSE, message=FALSE}
+# Create the variable injured
+df = df %>% 
+  mutate(injury = case_when(PERSONS_IN == 0 ~ "No",
+                             PERSONS_IN >= 1 ~ "Yes"))
+variable <- as.factor(df$injury)
+df$injury <- variable
+
+# Select relevant variables
+df <- subset(df, select = c(injury, K_PEOPLE, PERSONS_IN, CRASH_DT, VEH_COUNT, WEATHER_CO, LIGHT_COND,  
+         ALCOHOL_NO, BELTED_UNB, BIKE_NONBI, COLLISION_, 
+         DISTRACTED, ANIMAL, DROWSY_NOT, DRUG_NODRU, MOTOR_NONM, 
+         PED_NONPED, SPEED_NOTS, SENIOR_NOT, YOUNG_NOTY, OWNERSHIP)) 
+
+# datetime modification
+df <- df %>% 
+  mutate(year = substr(CRASH_DT, 1, 4),
+         month = substr(CRASH_DT, 6, 7),
+         day = substr(CRASH_DT, 9, 10))
+df$year <- as.factor(df$year)
+df$month <- as.factor(df$month)
+df$day <- as.factor(df$day)
+
+# Remove variables
+df <- subset(df, select = -c(CRASH_DT, PERSONS_IN, day)) 
+
+# Transform weather and light conditions
+df <- df %>% 
+  filter(WEATHER_CO != 99)%>%
+  filter(LIGHT_COND != 99)%>%
+  filter(COLLISION_ != 99)
+
+# class 
+summary(df)
+```
+
+## Outcome variable analysis
+# Data visualization
+```{r viz, echo=TRUE, warning=FALSE, message=FALSE}
+agg1 <- df %>% 
+  group_by(year, month, injury) %>%
+  summarise(n = n()) %>%
+  mutate(prop = n/sum(n),
+  pct = round((prop*100), 0))
+
+ggplot(agg1, aes(x=month, y=pct, group = injury, colour = injury)) + 
+  geom_line()  + 
+  geom_point( size=2, shape=21, fill="white") + 
+  scale_color_brewer(palette = 'Set1') +
+  theme_minimal() +
+  labs(x = "Month",
+       y = "Percentage (%)",
+       title= "Evolution of car crashes injuries in Virginia")+
+  facet_wrap(~ year)
+```
+
+# Injuries by year
+```{r table, echo=TRUE, warning=FALSE, message=FALSE}
+table(df$injury, df$year)
+```
+
+## Models Implementation
+
+Split the data between train and test
+```{r split, echo=TRUE, warning=FALSE}
+# Split data
+set.seed(321)
+spl = sample.split(df$injury, SplitRatio = 0.7)
+train = subset(df, spl==TRUE)
+test = subset(df, spl==FALSE)
+table(train$injury) #Check balance
+table(test$injury) #Check balance
+```
+
+Down sampling in the training data
+```{r sample, echo=TRUE, warning=FALSE, message=FALSE}
+# Index of values with yes and no
+Yes <- which(train$injury == "Yes")
+No <- which(train$injury == "No")
+
+# Sample the indices 
+downsample <- sample(No, length(Yes))
+train <- train[c(downsample, Yes),]
+table(train$injury)
+```
+
+# Logistic regression model
+```{r logistic, echo=TRUE, warning=FALSE}
+# Fit the logistic regression model
+set.seed(530)
+mod1 <- glm(injury ~ VEH_COUNT + ALCOHOL_NO + BELTED_UNB + BIKE_NONBI + 
+            OWNERSHIP + COLLISION_ + WEATHER_CO + LIGHT_COND + DISTRACTED + 
+            ANIMAL + DROWSY_NOT + DRUG_NODRU + MOTOR_NONM + PED_NONPED + 
+            SPEED_NOTS + SENIOR_NOT + YOUNG_NOTY + year,
+            data = train, family = binomial(link = "logit"), na.action = na.omit)
+summary(mod1)
+screenreg(list(mod1))
+
+# Odds ratio
+(exp(mod1$coefficients[-1])-1)*100                                                                              
+```
+
+# Evaluate the logistic regression performance on the testing set
+
+Implementing a roc curve 
+```{r roc, echo=TRUE, warning=FALSE}
+test_prediction <- predict(mod1, newdata = test)
+hist(test_prediction)
+
+pred = prediction(test_prediction, test$injury)
+perf = performance(pred, "tpr", "fpr")
+plot(perf)
+```
+
+Implementing a confusion Matrix and accuracy
+```{r cf, echo=TRUE, warning=FALSE}
+table(test$injury, test_prediction>0.5)
+(198485+22207)/(198485+22207+10280+80322)
+```
+
+# Decision Tree
+```{r decision1, echo=TRUE, warning=FALSE}
+# Decision tree
+set.seed(12)
+mod2 <- rpart(injury ~ VEH_COUNT + ALCOHOL_NO + BELTED_UNB + BIKE_NONBI + 
+            OWNERSHIP + COLLISION_ + WEATHER_CO + LIGHT_COND + DISTRACTED + 
+            ANIMAL + DROWSY_NOT + DRUG_NODRU + MOTOR_NONM + PED_NONPED + 
+            SPEED_NOTS + SENIOR_NOT + YOUNG_NOTY + year, data=train, method = "class",
+            control = rpart.control(maxdepth = 10, minsplit = 10))
+rpart.plot(mod2, extra = 104)
+```
+
+# Evaluate the decision treeperformance on the testing set
+```{r tree eval, echo=TRUE, warning=FALSE}
+# predict injury or not on train data
+train_prediction = predict(mod2, data=train, type = "class")
+
+# Confusion Matrix on train
+tab2 = table(Predicted = train_prediction, Actual = train$injury)
+confusionMatrix(tab2)
+
+# predict injury or not on test data
+test_prediction2 = predict(mod2, newdata=test, type = "class")
+
+# Confusion Matrix on test
+tab3 = table(Predicted = test_prediction2, Actual = test$injury)
+confusionMatrix(tab3)
+```
+
+## Decision Tree pruning
+
+```{r prunning, echo=TRUE, warning=FALSE}
+# Complexity plot
+printcp(mod2)
+plotcp(mod2)
+
+# pruning
+mod3 = prune(mod2, cp=0.011)
+rpart.plot(mod3, extra = 104)
+```
+
+Evaluate the pruning performance on the testing set
+```{r prunning eval, echo=TRUE, warning=FALSE}
+# predict injury or not on test data
+test_prediction3 = predict(mod3, newdata=test, type = "class")
+
+# Confusion Matrix on train
+tab4 = table(Predicted = test_prediction3, Actual = test$injury)
+confusionMatrix(tab4)
+```
+
+# Random Forest
+```{r random forest, echo=TRUE, warning=FALSE}
+set.seed(431)
+mod4=randomForest(injury ~ VEH_COUNT + ALCOHOL_NO + BELTED_UNB + BIKE_NONBI + 
+            OWNERSHIP + COLLISION_ + WEATHER_CO + LIGHT_COND + DISTRACTED + 
+            ANIMAL + DROWSY_NOT + DRUG_NODRU + MOTOR_NONM + PED_NONPED + 
+            SPEED_NOTS + SENIOR_NOT + YOUNG_NOTY + year, data=train,
+            mtry=7,importance=TRUE, ntree=100)
+plot(mod4)
+```
+
+Evaluate the random forest performance on the testing set
+```{r eval random forest, echo=TRUE, warning=FALSE}
+# predict injury or not on test data
+test_prediction4 = predict(mod4, newdata=test, type = "class")
+
+# Confusion Matrix on train
+tab5 = table(Predicted = test_prediction4, Actual = test$injury)
+confusionMatrix(tab5)
+```
+
+Variable importance
+```{r var importance, echo=TRUE, warning=FALSE}
+importance(mod4)
+varImpPlot(mod4)
+```
+
+
+
+
+
+
